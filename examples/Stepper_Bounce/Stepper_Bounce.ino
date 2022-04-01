@@ -4,6 +4,8 @@
 
    This is a 1:1 equivalent of the AccelStepper Bounce.pde example
    https://www.airspayce.com/mikem/arduino/AccelStepper/Bounce_8pde-example.html
+   
+   Needs AccelStepperI2C.h module enabled in the slave's firmware_modules.h.
 
 */
 

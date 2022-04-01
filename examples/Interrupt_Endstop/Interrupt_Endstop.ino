@@ -47,6 +47,22 @@ long lowerEndStopPos, upperEndStopPos, middlePos, range;
 long lower, upper;
 
 
+
+/***********************************************************************************
+
+   ISR
+
+ ************************************************************************************/
+// this has to come before setup(), else the Arduino environment will be confused by the conditionals and macros
+#if defined(ESP8266) || defined(ESP32)
+void IRAM_ATTR interruptFromSlave()
+#else
+void interruptFromSlave()
+#endif
+{
+  interruptFlag = true; // just set a flag, leave interrupt as quickly as possible
+}
+
 /***********************************************************************************
 
    SETUP
@@ -112,6 +128,7 @@ void setup()
   stepper.enableInterrupts(); // make slave send out interrupts for this stepper at the pin set above
 
   // And now make the master listen for the interrupt
+  pinMode(interruptPinMaster, INPUT);
   attachInterrupt(digitalPinToInterrupt(interruptPinMaster), interruptFromSlave, RISING);
 
 
@@ -251,12 +268,3 @@ void randomWalk(int repetitions, long chance) // % chance that target will be of
     } // switch
   }
 } // void randomWalk
-
-
-#if defined(ESP8266)
-ICACHE_RAM_ATTR
-#endif
-void interruptFromSlave()
-{
-  interruptFlag = true; // just set a flag, leave interrupt as quickly as possible
-}

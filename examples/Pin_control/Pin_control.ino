@@ -4,7 +4,7 @@
 
    Reads a digital and an analog input pin and mirrors their values on a
    digital and a PWM-capable output pin.
-   Needs PINCONTROL_SUPPORT enabled in the slave's firmware.
+   Needs PinI2C.h module enabled in the slave's firmware_modules.h.
 
 */
 

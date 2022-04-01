@@ -5,6 +5,8 @@
    This is a 1:1 equivalent of the Servo library's Sweep example
    https://docs.arduino.cc/learn/electronics/servo-motors
 
+   Needs the ServoI2C.h module enabled in the slave's firmware_modules.h.
+   
 */
 
 #include <Wire.h>

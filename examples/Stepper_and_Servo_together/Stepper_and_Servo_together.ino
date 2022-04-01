@@ -6,7 +6,9 @@
    demonstrate how steppers and servos can be used together.
    Attach two servos and a stepstick (A4988 etc.) driven stepper to the slave
    pins defined below.
-   Of course, the slave's firmware needs to be compiled with SERVO_SUPPORT enabled.
+   
+   Needs AccelStepperI2C.h and ServoI2C.h modules enabled in the slave's firmware_modules.h.
+   
 */
 
 #include <Wire.h>
