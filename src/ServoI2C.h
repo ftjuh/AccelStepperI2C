@@ -22,7 +22,7 @@
 
 
 #include <Arduino.h>
-#include "util/I2Cwrapper.h"
+#include <I2Cwrapper.h>
 
 #if !defined(log)
 #if defined(DEBUG)

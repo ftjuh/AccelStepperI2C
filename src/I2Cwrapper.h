@@ -20,8 +20,8 @@
 // #define DEBUG // uncomment for serial debugging, don't forget Serial.begin() in your master's setup()
 
 
-#include "SimpleBuffer.h"
-#include "version.h"
+#include "util/SimpleBuffer.h"
+#include "util/version.h"
 
 #if !defined(log)
 #if defined(DEBUG)
@@ -32,7 +32,8 @@
 #endif // log
 
 
-const uint16_t maxBufDefault = 20; // includes 1 byte for CRC8
+const uint8_t I2CmaxBuf = 20; // upper limit of send and receive buffer(s), includes 1 byte for CRC8
+
 
 // ms to wait between I2C communication, can be changed by setI2Cdelay()
 const unsigned long I2CdefaultDelay = 10;
@@ -73,6 +74,7 @@ const uint8_t interruptReason_none = 0; ///< You should not encounter this, as y
  * * 010 - 059 AccelStepperI2C
  * * 060 - 069 ServoI2C
  * * 070 - 079 PinI2C
+ * * 080 - 084 ESP32sensorsI2C
  * * 080 - 239 (unused)
  * * 240 - 255 I2Cwrapper commands (reset slave, change address etc.)
  * @par
@@ -89,7 +91,7 @@ public:
    * @param i2c_address Address of the slave device
    * @param maxBuf Upper limit of send and receive buffer including 1 crc8 byte
    */
-  I2Cwrapper(uint8_t i2c_address, uint8_t maxBuf = maxBufDefault);
+  I2Cwrapper(uint8_t i2c_address, uint8_t maxBuf = I2CmaxBuf);
 
   /*!
    * @brief Test if slave is listening.

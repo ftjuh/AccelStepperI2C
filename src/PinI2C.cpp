@@ -10,7 +10,6 @@
 */
 
 
-#include <Wire.h>
 #include <PinI2C.h>
 
 

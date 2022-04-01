@@ -1,9 +1,7 @@
-#/*!
+/*!
    @file firmware.ino
-   @brief Firmware for an I2C slave controlling up to 8 stepper motors with the AccelStepper library,
-   comes with the matching AccelStepperI2C library.
-   @details This documentation is probably only relevant for you if you want to change the firmware.
-   Otherwise, the library documentation should suffice.
+   @brief Generic firmware framework for I2C slaves with modular functionality,
+   built around the I2Cwrapper library
    @section author Author
    Copyright (c) 2022 juh
    @section license License
@@ -13,24 +11,25 @@
    @todo return messages (results) should ideally come with an id, too, so that master can be sure
       it's the correct result. Currently only CRC8, i.e. correct transmission is checked.
    @todo volatile variables / ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {}
-   @todo Module support (Servo, pin control, ...) needs to be outsourced and centralized. Currently
-   there are a number of places that need to be adapted if a new module is added: Init section, startup
-   message in setup(), processMessage().
-   @todo <del>make i2c address configurable with pins or via i2c/EEPROM</del>
-   @todo <del>implement endstops/reference positions</del>
 */
 
 //#define DEBUG // Uncomment this to enable library debugging output on Serial
 
 #include <Arduino.h>
 #include <Wire.h>
-#include <AccelStepperI2C.h>
 #include <EEPROM.h>
-// note: optional libraries like ServoI2C.h are conditionally included further below
+#include <I2Cwrapper.h>
 
-//#if defined(ARDUINO_ARCH_AVR) not needed anymore, reset now without watchdog
-//#include <avr/wdt.h>
-//#endif
+
+/*
+   Module framework stages. Used to include specific module sections at the right locations.
+*/
+#define MF_STAGE_includes       1
+#define MF_STAGE_declarations   2
+#define MF_STAGE_setup          3
+#define MF_STAGE_loop           4
+#define MF_STAGE_processMessage 5
+#define MF_STAGE_reset          6
 
 
 /************************************************************************/
@@ -43,19 +42,6 @@
    Alternatively, you can use setI2Caddress() from the library to change it later
 */
 const uint8_t slaveDefaultAddress = 0x08; // default
-
-/*
-   uncomment and define max. number of servos
-   to enable servo support
-*/
-#define SERVO_SUPPORT
-const uint8_t maxServos = 4;
-
-
-/*
-   uncomment to enable pin control support
-*/
-#define PINCONTROL_SUPPORT
 
 
 /*!
@@ -75,31 +61,14 @@ const uint8_t maxServos = 4;
 /******* end of firmware configuration settings **************************/
 /************************************************************************/
 
-/*
-   Servo stuff
-*/
-
-#if defined(SERVO_SUPPORT)
-
-#if defined(ARDUINO_ARCH_AVR) || defined(ARDUINO_ARCH_ESP8266)
-#include <Servo.h>
-#elif defined(ARDUINO_ARCH_ESP32)
-#include <ESP32Servo.h> // ESP32 doesn't come with a native Servo.h
-#endif // defined(ARDUINO_ARCH_AVR)
-#include <ServoI2C.h>
-
-Servo servos[maxServos]; // ### really allocate all of them now?
-uint8_t numServos = 0; // number of initialised servos.
-
-#endif // defined(SERVO_SUPPORT)
 
 /*
-   Pin control stuff
+   Inject module includes
 */
+#define MF_STAGE MF_STAGE_includes
+#include "firmware_modules.h"
+#undef MF_STAGE
 
-#if defined(PINCONTROL_SUPPORT)
-#include <PinI2C.h>
-#endif // defined(PINCONTROL_SUPPORT)
 
 
 /*
@@ -115,12 +84,13 @@ uint8_t numServos = 0; // number of initialised servos.
 
 #if defined(DEBUG)
 volatile uint8_t writtenToBuffer = 0;
-volatile uint8_t sentOnRequest = 0;
+volatile uint8_t sentOnRequest = 0; // used by requestEvent() to signal main loop that buffer has been sent
 uint32_t now, then = millis();
 bool reportNow = true;
 uint32_t lastCycles = 0; // for simple cycles/reportPeriod diagnostics
 const uint32_t reportPeriod = 2000; // ms between main loop simple diagnostics output
 #endif // DEBUG
+
 
 
 /*
@@ -138,6 +108,15 @@ uint32_t cycles = 0; // keeps count of main loop iterations
 
 
 /*
+   I2C stuff
+*/
+
+SimpleBuffer* bufferIn;
+SimpleBuffer* bufferOut;
+volatile uint8_t newMessage = 0; // signals main loop that a receiveEvent with valid new data occurred
+
+
+/*
    EEPROM stuff
 */
 
@@ -146,15 +125,6 @@ const uint32_t eepromI2CaddressMarker = 0x12C0ACCF; // arbitrary 32bit marker pr
 #if defined(ARDUINO_ARCH_ESP32) || defined(ARDUINO_ARCH_ESP8266)
 const uint32_t eepromUsedSize = 6; // total bytes of EEPROM used by us
 #endif // defined(ARDUINO_ARCH_ESP32) || defined(ARDUINO_ARCH_ESP8266)
-
-
-/*
-   I2C stuff
-*/
-
-SimpleBuffer* bufferIn;
-SimpleBuffer* bufferOut;
-volatile uint8_t newMessage = 0; // signals main loop that a receiveEvent with valid new data occurred
 
 
 /*!
@@ -227,47 +197,31 @@ bool interruptActiveHigh = true;
 uint8_t interruptSource = 0xF;
 uint8_t interruptReason = interruptReason_none;
 
-
 /*
-   Endstop stuff
+   Interrupt master if an interrupt pin has been set
 */
-
-struct Endstop
+void triggerInterrupt(uint8_t source, uint8_t reason)
 {
-  uint8_t pin;
-  bool activeLow;
-  //bool internalPullup; // we don't need to store this, we can directly use it when adding the pin
-};
-const uint8_t maxEndstops = 2; // not sure if there are scenarios where more than two make sense, but why not be prepared and make this configurable?
-const uint32_t endstopDebouncePeriod = 5; // millisecends to keep between triggering endstop interrupts; I measured a couple of switches, none bounced longer than 1 ms so this should be more than safe
+  if (interruptPin >= 0) {
+    //log("~~ interrupt master with source = "); log(source);
+    //log(" and reason = "); log(reason); log("\n");
+    digitalWrite(interruptPin, interruptActiveHigh ? HIGH : LOW);
+    interruptSource = source;
+    interruptReason = reason;
+  }
+}
 
-
-/*
-   Stepper stuff
-*/
-
-const uint8_t maxSteppers = 8;
-uint8_t numSteppers = 0; // number of initialised steppers
-
-/*!
-  @brief This struct comprises all stepper parameters needed for local slave management
-*/
-struct Stepper
+void clearInterrupt()
 {
-  AccelStepper* stepper;
-  uint8_t state = state_stopped;
-  Endstop endstops[maxEndstops];
-  uint8_t numEndstops = 0;
-  bool interruptsEnabled = false;
-  bool endstopsEnabled = false;
-  uint8_t prevEndstopState; // needed for detecting rising and falling flanks
-  uint32_t endstopDebounceEnd = 0; // used for debouncing, endstops are ignored after a new flank until this time is reached
-};
-Stepper steppers[maxSteppers];
+  if (interruptPin >= 0) {
+    digitalWrite(interruptPin, interruptActiveHigh ? LOW : HIGH);
+  }
+}
+
 
 
 /*
-  Reset stuff
+    Reset stuff
 */
 
 void resetFunc()
@@ -286,6 +240,16 @@ void resetFunc()
 }
 
 
+/*
+   Inject module declarations
+*/
+
+#define MF_STAGE MF_STAGE_declarations
+#include "firmware_modules.h"
+#undef MF_STAGE
+
+void requestEvent(); // forward declaration, without it the Arduino magic will be confused by the compiler directives
+
 /**************************************************************************/
 /*!
     @brief Setup system. Retrieve I2C address from EEPROM or default
@@ -298,28 +262,27 @@ void setup()
 #if defined(DEBUG)
   Serial.begin(115200);
 #endif
-  log("\n\n\n=== AccelStepperI2C v");
+  log("\n\n\n=== I2Cwrapper firmware v");
   log(I2Cw_VersionMajor); log("."); log(I2Cw_VersionMinor); log("."); log(I2Cw_VersionPatch); log(" ===\n");
-  log("Running on architecture "); 
-  #if defined(ARDUINO_ARCH_AVR)
+  log("Running on architecture ");
+#if defined(ARDUINO_ARCH_AVR)
   log("ARDUINO_ARCH_AVR\n");
-  #elif defined(ARDUINO_ARCH_ESP8266)
+#elif defined(ARDUINO_ARCbH_ESP8266)
   log("ARDUINO_ARCH_ESP8266\n");
-  #elif defined(ARDUINO_ARCH_ESP32)
+#elif defined(ARDUINO_ARCH_ESP32)
   log("ARDUINO_ARCH_ESP32\n");
-  #else
+#else
   log("unknown\n");
-  #endif
+#endif
   log("Compiled on " __DATE__ " at " __TIME__ "\n");
-  /* ### not a good solution; these module dependent things need to be outsourced, 
-   *  so that we don't need to make adaptions at many places when a new module is added.   *  
-   */
-  #ifdef SERVO_SUPPORT
-  log("Servo support enabled.\n");
-  #endif
-  #ifdef PINCONTROL_SUPPORT
-  log("Pin control support enabled.\n");
-  #endif
+
+  /*
+     Inject module setup()s
+  */
+#define MF_STAGE MF_STAGE_setup
+#include "firmware_modules.h"
+#undef MF_STAGE
+
 
   uint8_t i2c_address = retrieveI2C_address();
   Wire.begin(i2c_address);
@@ -327,78 +290,11 @@ void setup()
   Wire.onReceive(receiveEvent);
   Wire.onRequest(requestEvent);
 
-  bufferIn = new SimpleBuffer; bufferIn->init(AccelStepperI2CmaxBuf);
-  bufferOut = new SimpleBuffer; bufferOut->init(AccelStepperI2CmaxBuf);
+  bufferIn = new SimpleBuffer; bufferIn->init(I2CmaxBuf);
+  bufferOut = new SimpleBuffer; bufferOut->init(I2CmaxBuf);
 
 }
 
-/**************************************************************************/
-/*!
-    @brief Assign and initialize new stepper. Calls the
-     <a href="https://www.airspayce.com/mikem/arduino/AccelStepper/classAccelStepper.html#a3bc75bd6571b98a6177838ca81ac39ab">
-      AccelStepper's[1/2] constructor</a>
-    @returns internal number (0-7) of stepper assigned to new stepper, -1 for error
-*/
-/**************************************************************************/
-int8_t addStepper(uint8_t interface = AccelStepper::FULL4WIRE,
-                  uint8_t pin1 = 2,
-                  uint8_t pin2 = 3,
-                  uint8_t pin3 = 4,
-                  uint8_t pin4 = 5,
-                  bool enable = true)
-{
-  if (numSteppers < maxSteppers) {
-    steppers[numSteppers].stepper = new AccelStepper(interface, pin1, pin2, pin3, pin4, enable);
-    steppers[numSteppers].state = state_stopped;
-    log("Add stepper with internal myNum = "); log(numSteppers); log("\n");
-    return numSteppers++;
-  } else {
-    log("-- Too many steppers, failed to add new one\n");
-    return -1;
-  }
-}
-
-
-/*
-   Read endstop(s) for stepper s.
-   Returns bit pattern, last added endstop is LSB; 0 for inactive, 1 for active (taking activeLow in account)
-   Returns 0x0 if no endstops set.
-*/
-
-uint8_t pollEndstops(uint8_t s)
-{
-  uint8_t res = 0;
-  for (uint8_t i = 0; i < steppers[s].numEndstops; i++) {
-    //log(i); log(" p");
-    //log(digitalRead(steppers[s].endstops[i].pin));  log(" ");
-    res = (res << 1) | (digitalRead(steppers[s].endstops[i].pin) ^ steppers[s].endstops[i].activeLow); // xor
-  }
-  //log(" res="); log(res);       log(" ");
-  return res;
-}
-
-
-/*
-   Interrupt master if interrupts are enabled for the source stepper.
-*/
-
-void triggerInterrupt(uint8_t source, uint8_t reason)
-{
-  if (steppers[source].interruptsEnabled and interruptPin >= 0) {
-    log("~~ interrupt master with source = "); log(source);
-    log(" and reason = "); log(reason); log("\n");
-    digitalWrite(interruptPin, interruptActiveHigh ? HIGH : LOW);
-    interruptSource = source;
-    interruptReason = reason;
-  }
-}
-
-void clearInterrupt()
-{
-  if (interruptPin >= 0) {
-    digitalWrite(interruptPin, interruptActiveHigh ? LOW : HIGH);
-  }
-}
 
 /**************************************************************************/
 /*!
@@ -418,80 +314,25 @@ void loop()
   now = millis();
   if (now > then) { // report cycles/reportPeriod statistics and state machine states for all defined steppers
     reportNow = true;
-    log("\n    > Cycles/s = "); log((cycles - lastCycles) * 1000 / reportPeriod);
-    if (numSteppers > 0) {
-      log("  | [Steppers]:states =");
-    }
+    log("\n    > Cycles/s = "); log((cycles - lastCycles) * 1000 / reportPeriod); log("\n");
     lastCycles = cycles;
     then = now + reportPeriod;
   }
-#endif
+#endif // defined(DEBUG)
 
-  for (uint8_t i = 0; i < numSteppers; i++) {  // cycle through all defined steppers
-
-#if defined(DEBUG)
-    if (reportNow) {
-      log("  ["); log(i); log("]:"); log(steppers[i].state);
-    }
-#endif
-
-    bool timeToCheckTheEndstops = false; // ###todo: change polling to pinchange interrupt
-    // ### do we need this at all? Why not just poll each cycle? It doesn't take very long.
-    switch (steppers[i].state) {
-
-      case state_run: // boolean AccelStepper::run
-        if (not steppers[i].stepper->run()) { // target reached?
-          steppers[i].state = state_stopped;
-          triggerInterrupt(i, interruptReason_targetReachedByRun);
-        }
-        timeToCheckTheEndstops = true; // we cannot tell if there was a step, so we'll have to check every time. (one more reason to do it with interrupts)
-        break;
-
-      case state_runSpeed:  // boolean AccelStepper::runSpeed
-        timeToCheckTheEndstops = steppers[i].stepper->runSpeed(); // true if stepped
-        break;
-
-      case state_runSpeedToPosition:  // boolean AccelStepper::runSpeedToPosition
-        timeToCheckTheEndstops = steppers[i].stepper->runSpeedToPosition();  // true if stepped
-        if (steppers[i].stepper->distanceToGo() == 0) {
-          // target reached, stop polling
-          steppers[i].state = state_stopped;
-          triggerInterrupt(i, interruptReason_targetReachedByRunSpeedToPosition);
-        }
-        break;
-
-      case state_stopped: // do nothing
-        break;
-    } // switch
+  /*
+    Inject modules' loop section
+  */
+#define MF_STAGE MF_STAGE_loop
+#include "firmware_modules.h"
+#undef MF_STAGE
 
 #if defined(DEBUG)
-    if (reportNow) {
-      log("\n\n");
-      reportNow = false;
-    }
+  if (reportNow) {
+    log("\n\n");
+    reportNow = false;
+  }
 #endif
-
-    if (timeToCheckTheEndstops and steppers[i].endstopsEnabled) { // the stepper (potentially) stepped a step, so let's look at the endstops
-      uint8_t es = pollEndstops(i);
-      if (es != steppers[i].prevEndstopState) { // detect rising *or* falling flank
-        uint32_t ms = millis();
-        if (ms > steppers[i].endstopDebounceEnd) { // primitive debounce: ignore endstops for some ms after each new flank
-          log("** es: flank detected  \n");
-          steppers[i].endstopDebounceEnd = ms + endstopDebouncePeriod; // set end of debounce period
-          steppers[i].prevEndstopState = es;
-          if (es != 0) { // this is a non-bounce, *rising* flank
-            log("** es: endstop detected!\n");
-            //steppers[i].stepper->stop();
-            steppers[i].stepper->setSpeed(0);
-            steppers[i].stepper->moveTo(steppers[i].stepper->currentPosition());
-            steppers[i].state = state_stopped; // endstop reached, stop polling
-            triggerInterrupt(i, interruptReason_endstopHit);
-          }
-        }
-      }
-    } // check endstops
-
-  } // for
 
   // Check for new incoming messages from I2C interrupt
   if (newMessage > 0) {
@@ -500,7 +341,7 @@ void loop()
   }
 
 #if defined(DEBUG)
-  if (sentOnRequest > 0) {
+  if (sentOnRequest > 0) { // check if a requestEvent() happened and data was sent
     log("Output buffer sent ("); log(sentOnRequest); log(" bytes): ");
     for (uint8_t j = 0; j < sentOnRequest; j++) {
       log(bufferOut->buffer[j]);  log(" ");
@@ -511,6 +352,7 @@ void loop()
 #endif
 
   cycles++;
+
 }
 
 
@@ -548,15 +390,7 @@ void receiveEvent(int howMany)
 
 }
 
-bool validStepper(int8_t s)
-{
-  return (s >= 0) and (s < numSteppers);
-}
 
-bool validServo(int8_t s)
-{
-  return (s >= 0) and (s < numServos);
-}
 
 /**************************************************************************/
 /*!
@@ -603,321 +437,25 @@ void processMessage(uint8_t len)
     switch (cmd) {
 
       /*
-       * AccelStepper commands
-       */
-
-      case moveToCmd: { // void   moveTo (long absolute)
-          if (validStepper(unit) and (i == 4)) { // 1 long parameter (not nice to have these constants hardcoded here, but what the heck)
-            long l = 0;
-            bufferIn->read(l);
-            steppers[unit].stepper->moveTo(l);
-          }
-        }
-        break;
-
-      case moveCmd: { // void   move (long relative)
-          if (validStepper(unit) and (i == 4)) { // 1 long parameter
-            long l = 0;
-            bufferIn->read(l);
-            steppers[unit].stepper->move(l);
-          }
-        }
-        break;
-
-      // usually not to be called directly via I2C, use state machine instead
-      case runCmd: { // boolean  run ()
-          if (validStepper(unit) and (i == 0)) { // no parameters
-            bool res = steppers[unit].stepper->run();
-            bufferOut->write(res);
-          }
-        }
-        break;
-
-      // usually not to be called directly via I2C, use state machine instead
-      case runSpeedCmd: { //  boolean   runSpeed ()
-          if (validStepper(unit) and (i == 0)) { // no parameters
-            bool res = steppers[unit].stepper->runSpeed();
-            bufferOut->write(res);
-          }
-        }
-        break;
-
-      case setMaxSpeedCmd: { // void   setMaxSpeed (float speed)
-          if (validStepper(unit) and (i == 4)) { // 1 long parameter
-            float f = 0;
-            bufferIn->read(f);
-            steppers[unit].stepper->setMaxSpeed(f);
-          }
-        }
-        break;
-
-      case maxSpeedCmd: { // float  maxSpeed ()
-          if (validStepper(unit) and (i == 0)) { // no parameters
-            float f = steppers[unit].stepper->maxSpeed();
-            bufferOut->write(f);
-          }
-        }
-        break;
-
-      case setAccelerationCmd: { // void   setAcceleration (float acceleration)
-          if (validStepper(unit) and (i == 4)) { // 1 float parameter
-            float f = 0;
-            bufferIn->read(f);
-            steppers[unit].stepper->setAcceleration(f);
-          }
-        }
-        break;
-
-      case setSpeedCmd: { // void   setSpeed (float speed)
-          if (validStepper(unit) and (i == 4)) { // 1 float parameter
-            float f = 0;
-            bufferIn->read(f);
-            steppers[unit].stepper->setSpeed(f);
-          }
-        }
-        break;
-
-      case speedCmd: { // float  speed ()
-          if (validStepper(unit) and (i == 0)) { // no parameters
-            float f = steppers[unit].stepper->speed();
-            bufferOut->write(f);
-          }
-        }
-        break;
-
-      case distanceToGoCmd: { // long   distanceToGo ()
-          if (validStepper(unit) and (i == 0)) { // no parameters
-            long l = steppers[unit].stepper->distanceToGo();
-            bufferOut->write(l);
-          }
-        }
-        break;
-
-      case targetPositionCmd: { // long   targetPosition ()
-          if (validStepper(unit) and (i == 0)) { // no parameters
-            long l = steppers[unit].stepper->targetPosition();
-            bufferOut->write(l);
-          }
-        }
-        break;
-
-      case currentPositionCmd: { // long   currentPosition ()
-          if (validStepper(unit) and (i == 0)) { // no parameters
-            long l = steppers[unit].stepper->currentPosition();
-            bufferOut->write(l);
-          }
-        }
-        break;
-
-      case setCurrentPositionCmd: { // void   setCurrentPosition (long position)
-          if (validStepper(unit) and (i == 4)) { // 1 long parameter
-            long l = 0;
-            bufferIn->read(l);
-            steppers[unit].stepper->setCurrentPosition(l);
-          }
-        }
-        break;
-
-      // blocking, implemented in master library
-      // case runToPositionCmd:  // void   runToPosition () {}
-      //  break;
-
-      // usually not to be called directly via I2C, use state machine instead
-      case runSpeedToPositionCmd: { // boolean  runSpeedToPosition ()
-          if (validStepper(unit) and (i == 0)) { // no parameters
-            bool res = steppers[unit].stepper->runSpeedToPosition();
-            bufferOut->write(res);
-          }
-        }
-        break;
-
-      // blocking, implemented in master library
-      // case runToNewPositionCmd: // void   runToNewPosition (long position) {}
-      //  break;
-
-      case stopCmd: { // void   stop ()
-          if (validStepper(unit) and (i == 0)) { // no parameters
-            steppers[unit].stepper->stop();
-          }
-        }
-        break;
-
-      case disableOutputsCmd: { // virtual void   disableOutputs ()
-          if (validStepper(unit) and (i == 0)) { // no parameters
-            steppers[unit].stepper->disableOutputs();
-          }
-        }
-        break;
-
-      case enableOutputsCmd: { // virtual void   enableOutputs ()
-          if (validStepper(unit) and (i == 0)) { // no parameters
-            steppers[unit].stepper->enableOutputs();
-          }
-        }
-        break;
-
-      case setMinPulseWidthCmd: { // void   setMinPulseWidth (unsigned int minWidth)
-          if (validStepper(unit) and (i == 2)) {
-            // 1 uint16
-            uint16_t minW = 0;
-            bufferIn->read(minW);
-            steppers[unit].stepper->setMinPulseWidth(minW);
-          }
-        }
-        break;
-
-      case setEnablePinCmd: { // void   setEnablePin (uint8_t enablePin=0xff)
-          if (validStepper(unit) and (i == 1)) {
-            // 1 uint8_t
-            uint8_t pin = 0;
-            bufferIn->read(pin);
-            steppers[unit].stepper->setEnablePin(pin);
-          }
-        }
-        break;
-
-      case setPinsInverted1Cmd: { // void   setPinsInverted (bool directionInvert=false, bool stepInvert=false, bool enableInvert=false)
-          if (validStepper(unit) and (i == 1)) {
-            // 8 bits
-            uint8_t b = 0;
-            bufferIn->read(b);
-            steppers[unit].stepper->setPinsInverted(
-              (b & 1 << 0) != 0, (b & 1 << 1) != 0, (b & 1 << 2) != 0);
-          }
-        }
-        break;
-
-      case setPinsInverted2Cmd: { //  void  setPinsInverted (bool pin1Invert, bool pin2Invert, bool pin3Invert, bool pin4Invert, bool enableInvert)
-          if (validStepper(unit) and (i == 1)) {
-            // 8 bits
-            uint8_t b;
-            bufferIn->read(b);
-            steppers[unit].stepper->setPinsInverted(
-              (b & 1 << 0) != 0, (b & 1 << 1) != 0, (b & 1 << 2) != 0, (b & 1 << 3) != 0, (b & 1 << 4) != 0);
-          }
-        }
-        break;
-
-      case isRunningCmd: { // bool   isRunning ()
-          if (validStepper(unit) and (i == 0)) { // no parameters
-            bool b = steppers[unit].stepper->isRunning();
-            bufferOut->write(b);
-          }
-        }
-        break;
-
-
-      /*
-          AccelstepperI2C state machine and other new commands
+        Inject modules' processMessage sections
       */
 
-
-      case attachCmd: { //
-          //log("addStepperCmd\n");
-          if (i == 6) { // 5 uint8_t + 1 bool
-            uint8_t interface; bufferIn->read(interface);
-            uint8_t pin1; bufferIn->read(pin1);
-            uint8_t pin2; bufferIn->read(pin2);
-            uint8_t pin3; bufferIn->read(pin3);
-            uint8_t pin4; bufferIn->read(pin4);
-            bool enable; bufferIn->read(enable);
-            int8_t num = addStepper(interface, pin1, pin2, pin3, pin4, enable);
-            bufferOut->write(num);
-          }
-        }
-        break;
-
-#if defined(DIAGNOSTICS)
-
-      case enableDiagnosticsCmd: {
-          if (i == 1) { // 1 bool
-            bufferIn->read(diagnosticsEnabled);
-          }
-        }
-        break;
-
-      case diagnosticsCmd: {
-          if (i == 0) { // no parameters
-            currentDiagnostics.cycles = cycles;
-            bufferOut->write(currentDiagnostics);
-            cycles = 0;
-          }
-        }
-        break;
-
-#endif // DIAGNOSTICS
-
-      case enableInterruptsCmd: { //
-          if (validStepper(unit) and (i == 1)) { // 1 bool
-            bufferIn->read(steppers[unit].interruptsEnabled);
-          }
-        }
-        break;
-
-      case setStateCmd: { //
-          if (validStepper(unit) and (i == 1)) { // 1 uint8_t
-            uint8_t newState;
-            bufferIn->read(newState);
-            steppers[unit].state = newState;
-          }
-        }
-        break;
-
-
-      case getStateCmd: { //
-          if (validStepper(unit) and (i == 0)) { // no parameters
-            bufferOut->write(steppers[unit].state);
-          }
-        }
-        break;
-
-
-      case setEndstopPinCmd: { //
-          if (validStepper(unit) and (i == 3) and (steppers[unit].numEndstops < maxEndstops)) {
-            int8_t pin; bufferIn->read(pin);
-            bool activeLow; bufferIn->read(activeLow);
-            bool internalPullup; bufferIn->read(internalPullup);
-            steppers[unit].endstops[steppers[unit].numEndstops].pin = pin;
-            steppers[unit].endstops[steppers[unit].numEndstops].activeLow = activeLow;
-            pinMode(pin, internalPullup ? INPUT_PULLUP : INPUT);
-            steppers[unit].numEndstops++;
-          }
-        }
-        break;
-
-      case enableEndstopsCmd: {
-          if (validStepper(unit) and (i == 1)) { // 1 bool
-            bool en; bufferIn->read(en);
-            steppers[unit].endstopsEnabled = en;
-            if (en) { // prevent that an interrupt is triggered immediately in case an endstop happens to be active at the moment
-              steppers[unit].prevEndstopState = pollEndstops(unit);
-            }
-          }
-        }
-        break;
-
-      case endstopsCmd: {
-          if (validStepper(unit) and (i == 0)) { // no parameters
-            uint8_t b = pollEndstops(unit);
-            bufferOut->write(b);
-          }
-        }
-        break;
-
+#define MF_STAGE MF_STAGE_processMessage
+#include "firmware_modules.h"
+#undef MF_STAGE
 
 
       /*
          I2Cwrapper commands
       */
 
-
       case resetCmd: {
           if (i == 0) { // no parameters
             log("\n\n---> Resetting\n\n");
-            for (uint8_t j = 0; j < numSteppers; j++) {
-              steppers[j].stepper->stop();
-              steppers[j].stepper->disableOutputs();
-            }
+// Inject modules' reset code
+#define MF_STAGE MF_STAGE_reset 
+#include "firmware_modules.h"
+#undef MF_STAGE
           }
 #if defined(DEBUG)
           Serial.flush();
@@ -925,6 +463,7 @@ void processMessage(uint8_t len)
           resetFunc();
         }
         break;
+
 
       case changeI2CaddressCmd: {
           if (i == 1) { // 1 uint8_t
@@ -934,7 +473,7 @@ void processMessage(uint8_t len)
           }
         }
         break;
-        
+
       case setInterruptPinCmd: {
           if (i == 2) {
             bufferIn->read(interruptPin);
@@ -963,152 +502,6 @@ void processMessage(uint8_t len)
         break;
 
 
-      /*
-         ServoI2C commands
-         
-         Note: servo implementation is dumb. It passes each command over I2C even if only some of the commands 
-         actually do something slave related. It would be much smarter to let the master do commands like 
-         attached() without I2C traffic. The dumb way however is easier and safer.         
-      */
-
-
-#if defined(SERVO_SUPPORT)
-
-      case servoAttach1Cmd: {
-          if ((numServos < maxServos) and (i == 2)) { // 1 int
-            int p; bufferIn->read(p);
-            servos[numServos].attach(p);
-            bufferOut->write(numServos++);
-            log(numServos);
-          }
-        }
-        break;
-
-      case servoAttach2Cmd: {
-          if ((numServos < maxServos) and (i == 6)) { // 3 int
-            int p; bufferIn->read(p);
-            int min; bufferIn->read(min);
-            int max; bufferIn->read(max);
-            servos[numServos].attach(p, min, max);
-            bufferOut->write(numServos++);
-          }
-        }
-        break;
-
-      case servoDetachCmd: {
-          if (validServo(unit) and (i == 0)) { // no parameters
-            servos[unit].detach();
-          }
-        }
-        break;
-
-      case servoWriteCmd: {
-          if (validServo(unit) and (i == 2)) { // 1 int
-            int value; bufferIn->read(value);
-            servos[unit].write(value);
-          }
-        }
-        break;
-
-      case servoWriteMicrosecondsCmd: {
-          if (validServo(unit) and (i == 2)) { // 1 int
-            int value; bufferIn->read(value);
-            servos[unit].writeMicroseconds(value);
-          }
-        }
-        break;
-
-      case servoReadCmd: {
-          if (validServo(unit) and (i == 0)) { // no parameters
-            bufferOut->write(servos[unit].read());
-          }
-        }
-        break;
-
-      case servoReadMicrosecondsCmd: {
-          if (validServo(unit) and (i == 0)) { // no parameters
-            bufferOut->write(servos[unit].readMicroseconds());
-          }
-        }
-        break;
-
-      case servoAttachedCmd: {
-          if (validServo(unit) and (i == 0)) { // no parameters
-            bufferOut->write(servos[unit].attached());
-          }
-        }
-        break;
-
-#endif // defined(SERVO_SUPPORT)
-
-
-
-      /*
-
-         Pin control commands
-         
-      */
-
-#if defined(PINCONTROL_SUPPORT)
-
-      case pinPinModeCmd: {
-          if (i == 2) { // 2 uint8_t
-            uint8_t pin; bufferIn->read(pin);
-            uint8_t mode; bufferIn->read(mode);
-            log("pinMode("); log(pin); log(", "); log(mode); log(")\n\n");
-            pinMode(pin, mode);
-          }
-        }
-        break;
-
-      case pinDigitalReadCmd: {
-          if (i == 1) { // 1 uint8_t
-            uint8_t pin; bufferIn->read(pin);            
-            bufferOut->write((int16_t)digitalRead(pin)); // int is not 2 bytes on all Arduinos (sigh)
-          }
-        }
-        break;
-
-      case pinDigitalWriteCmd: {
-          if (i == 2) { // 2 uint8_t
-            uint8_t pin; bufferIn->read(pin);
-            uint8_t value; bufferIn->read(value);
-            digitalWrite(pin, value);
-          }
-        }
-        break;
-
-      case pinAnalogReadCmd: {
-          if (i == 1) { // 1 uint8_t
-            uint8_t pin; bufferIn->read(pin);            
-            bufferOut->write((int16_t)analogRead(pin)); // int is not 2 bytes on all Arduinos (sigh)
-          }
-        }
-        break;
-
-
-      case pinAnalogWriteCmd: {
-          if (i == 3) { // 1 uint8_t, 1 int16_t ("int")
-            uint8_t pin; bufferIn->read(pin);
-            int16_t value; bufferIn->read(value);
-            analogWrite(pin, value);
-          }
-        }
-        break;
-
-#if defined(ARDUINO_ARCH_AVR) // no analogReference() on ESPs
-      case pinAnalogReferenceCmd: {
-          if (i == 1) { //1 uint8_t
-            uint8_t mode; bufferIn->read(mode);
-            analogReference(mode);
-          }
-        }
-        break;
-#endif // defined(ARDUINO_ARCH_AVR)
-
-#endif // defined(PINCONTROL_SUPPORT)
-
-
       default:
         log("No matching command found");
 
@@ -1130,7 +523,7 @@ void processMessage(uint8_t len)
     // will only be sent in the next request cycle. So let's prefill the buffer here.
     // ### what exactly is the role of slaveWrite() vs. Write(), here?
     // ### slaveWrite() is only for ESP32, not for it's poorer cousins ESP32-S2 and ESP32-C3. Need to fine tune the compiler directive, here?
-    log("   ESP32 buffer prefill  ");
+    // log("   ESP32 buffer prefill  ");
     writeOutputBuffer();
 #endif  // ESP32
 
@@ -1145,7 +538,7 @@ void processMessage(uint8_t len)
 }
 
 // If there is anything in the output buffer, write it out to I2C.
-// This is outdourced to a function, as, depending on the architecture,
+// This is outsourced to a function, as, depending on the architecture,
 // it is called either directly from the interrupt (AVR) or from
 // message processing (ESP32).
 void writeOutputBuffer()
@@ -1162,12 +555,12 @@ void writeOutputBuffer()
 #endif  // ESP32
 
 #if defined(DEBUG)
-//    // for AVRs logging to Serial will happen in an interrupt - not recommenended but seems to work
-//    log("sent "); log(bufferOut->idx); log(" bytes: ");
-//    for (uint8_t i = 0; i < bufferOut->idx; i++) {
-//      log(bufferOut->buffer[i]);  log(" ");
-//    }
-//    log("\n");
+    //    // for AVRs logging to Serial will happen in an interrupt - not recommenended but seems to work
+    //    log("sent "); log(bufferOut->idx); log(" bytes: ");
+    //    for (uint8_t i = 0; i < bufferOut->idx; i++) {
+    //      log(bufferOut->buffer[i]);  log(" ");
+    //    }
+    //    log("\n");
     writtenToBuffer = bufferOut->idx; // store this (for ESP32) to signal main loop later that we sent buffer
 #endif
 
@@ -1185,10 +578,12 @@ void writeOutputBuffer()
   pending, e.g. current position etc.</done> not implemented, ESP32 can't do that (doh)
 */
 /**************************************************************************/
-#if defined(ARDUINO_ARCH_ESP8266)
-ICACHE_RAM_ATTR
-#endif
+
+#if defined(ESP8266) || defined(ESP32)
+void IRAM_ATTR requestEvent()
+#else
 void requestEvent()
+#endif
 {
 
 #if defined(DIAGNOSTICS)

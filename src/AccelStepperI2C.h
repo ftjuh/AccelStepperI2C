@@ -63,7 +63,7 @@
 
 #include <Arduino.h>
 #include <AccelStepper.h>
-#include "util/I2Cwrapper.h"
+#include <I2Cwrapper.h>
 
 #if !defined(log)
 #if defined(DEBUG)
@@ -73,8 +73,6 @@
 #endif // DEBUG
 #endif // log
 
-
-const uint8_t AccelStepperI2CmaxBuf = 20; // upper limit of send and receive buffer(s)
 
 // used as return valuefor calls with long/float result that got no correct reply from slave
 // However, errors are now signaled with resultOK, so no need for a special value here, just take 0
