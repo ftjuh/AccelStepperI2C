@@ -158,7 +158,7 @@ public:
    * @brief Get semver compliant version of slave firmware.
    * @returns major version in bits 0-7, minor version in bits 8-15; patch version in bits 16-23;  0xFFFFFFFF on error.
    */
-  uint32_t getSlaveVersion();
+  uint32_t getVersion();
 
 
   /*!

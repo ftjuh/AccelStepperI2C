@@ -143,7 +143,7 @@ uint8_t I2Cwrapper::clearInterrupt()
   return res;
 }
 
-uint32_t I2Cwrapper::getSlaveVersion()
+uint32_t I2Cwrapper::getVersion()
 {
   prepareCommand(getVersionCmd);
   uint32_t res = 0xffffffff;
