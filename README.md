@@ -2,7 +2,9 @@
 
 ### **AccelStepperI2C is deprecated.** 
 
-If you've used it before, please **uninstall** it from your Arduino libraries directory and **install [I2Cwrapper](https://github.com/ftjuh/I2Cwrapper) instead**. It is more powerful and flexible and can replace this project in every regard.
+If you've used it before, please **uninstall** it and **install [I2Cwrapper](https://github.com/ftjuh/I2Cwrapper) instead**. It is more powerful and flexible and can replace this project in every regard.
+
+To uninstall, just delete the AccelStepperI2C folder from your Arduino libraries directory ([here's how to find it](https://docs.arduino.cc/software/ide-v1/tutorials/installing-libraries#manual-installation)). If you do not uninstall it, you'll run the risk of include conflicts when using I2Cwrapper.
 
 If you are looking for the old AccelStepperI2C functionality, use I2Cwrapper and enable  the two modules AccelStepperI2C and ServoI2C in `firmware_modules.h`.
 
