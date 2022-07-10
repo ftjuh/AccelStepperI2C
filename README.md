@@ -1,6 +1,18 @@
-Note: AccelStepperI2C is retiring. It is being replaced by the more powerful and flexible [I2Cwrapper framework](https://github.com/ftjuh/I2Cwrapper).
+------
 
-If you are only looking for the old AccelStepperI2c functionality, use I2Cwrapper and enable  the two modules AccelStepperI2C and ServoI2C in `firmware_modules.h`.
+### **AccelStepperI2C is deprecated.** 
+
+If you've used it before, please **uninstall** it from your Arduino libraries directory and **install [I2Cwrapper](https://github.com/ftjuh/I2Cwrapper) instead**. It is more powerful and flexible and can replace this project in every regard.
+
+If you are looking for the old AccelStepperI2C functionality, use I2Cwrapper and enable  the two modules AccelStepperI2C and ServoI2C in `firmware_modules.h`.
+
+------
+
+
+
+
+
+The following documentation is only left in place for documentary purposes.
 
 # Introduction
 
