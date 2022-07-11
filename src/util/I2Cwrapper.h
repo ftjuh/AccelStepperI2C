@@ -1,6 +1,7 @@
 /*!
  *  @file I2Cwrapper.h
- *  @brief A helper class for the AccelStepperI2C and related libraries.
+ *  @brief [Deprecated as of July 2022. Please uninstall and use https://github.com/ftjuh/I2Cwrapper instead.]
+ *  A helper class for the AccelStepperI2C and related libraries.
  *  @section author Author
  *  Copyright (c) 2022 juh
  *  @section license License
@@ -13,6 +14,8 @@
  *  atm there's some unhealthy copy and paste</del>implemented with I2Cwrapper, but
  *  with client instead of inheritance relation.
  */
+
+#warning "Deprecated as of July 2022. Please uninstall and use https://github.com/ftjuh/I2Cwrapper instead."
 
 #ifndef I2Cwrapper_h
 #define I2Cwrapper_h

@@ -1,6 +1,7 @@
 /*!
   @file ServoI2C.h
-  @brief Arduino library for I2C-control of servo motors connected to
+  @brief [Deprecated as of July 2022. Please uninstall and use https://github.com/ftjuh/I2Cwrapper instead.]
+  Arduino library for I2C-control of servo motors connected to
   another Arduino which runs the associated @ref firmware.ino "AccelStepperI2C firmware".
   This is more or less a byproduct of the AccelStepperI2C project, but could be
   used as a (slightly bloated) standalone solution for I2C control of servo motors.

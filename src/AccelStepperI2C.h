@@ -1,7 +1,8 @@
 /*!
   @file AccelStepperI2C.h
   @mainpage %AccelStepperI2C library
-  @brief Arduino library for I2C-control of stepper motors connected to
+  @brief [Deprecated as of July 2022. Please uninstall and use https://github.com/ftjuh/I2Cwrapper instead.]
+  Arduino library for I2C-control of stepper motors connected to
   another Arduino which runs the associated @ref firmware.ino "AccelStepperI2C firmware".  
   See the @ref AccelStepperI2C "AccelStepperI2C class reference" for
   differences to the methods of the original AccelStepper class and for new

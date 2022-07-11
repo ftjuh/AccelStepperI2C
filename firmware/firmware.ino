@@ -1,6 +1,7 @@
 /*!
    @file firmware.ino
-   @brief Firmware for an I2C slave controlling up to 8 stepper motors with the AccelStepper library,
+   @brief [Deprecated as of July 2022. Please uninstall and use https://github.com/ftjuh/I2Cwrapper instead.]
+   Firmware for an I2C slave controlling up to 8 stepper motors with the AccelStepper library,
    comes with the matching AccelStepperI2C library.
    @details This documentation is probably only relevant for you if you want to change the firmware.
    Otherwise, the library documentation should suffice.
@@ -20,6 +21,7 @@
    @todo <del>implement endstops/reference positions</del>
 */
 
+#warning "Deprecated as of July 2022. Please uninstall and use https://github.com/ftjuh/I2Cwrapper instead."
 //#define DEBUG // Uncomment this to enable library debugging output on Serial
 
 #include <Arduino.h>
